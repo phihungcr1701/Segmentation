@@ -12,9 +12,9 @@ class PanNukeDataset(Dataset):
             fold (int): Fold number (1, 2, or 3).
             transform (callable, optional): Optional transform to apply.
         """
-        self.images_path = os.path.join(root_dir, f"Fold {fold}/images/fold{fold}/images.npy")
-        self.masks_path = os.path.join(root_dir, f"Fold {fold}/masks/fold{fold}/masks.npy")
-        self.types_path = os.path.join(root_dir, f"Fold {fold}/images/fold{fold}/types.npy")
+        self.images_path = os.path.join(root_dir, f"fold_{fold}/Fold {fold}/images/fold{fold}/images.npy")
+        self.masks_path = os.path.join(root_dir, f"fold_{fold}/Fold {fold}/masks/fold{fold}/masks.npy")
+        self.types_path = os.path.join(root_dir, f"fold_{fold}/Fold {fold}/images/fold{fold}/types.npy")
 
         self.images = np.load(self.images_path, mmap_mode='r')  # N x W x H x C
         self.masks = np.load(self.masks_path, mmap_mode='r')    # N x W x H x 6
