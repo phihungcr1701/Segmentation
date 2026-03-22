@@ -4,6 +4,8 @@ import os
 
 def save_checkpoint(state, filename='checkpoints/checkpoint.pth'):
     print("Saving checkpoint ...")
+    # Create parent directory if it doesn't exist
+    os.makedirs(os.path.dirname(filename), exist_ok=True)
     torch.save(state, filename)
     
 def load_checkpoint(filepath, model):
