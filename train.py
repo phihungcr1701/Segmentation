@@ -106,6 +106,9 @@ def main(args):
 
     scaler = torch.cuda.amp.GradScaler()
     for epoch in range(args.num_epochs):
+        print(f"\n{'='*60}")
+        print(f"Epoch {epoch+1}/{args.num_epochs}")
+        print(f"{'='*60}")
 
         if args.model == 'ResNetUNet_pt':
             if unfreeze_encoder(model, epoch, unfreeze_epoch=3):
@@ -121,7 +124,7 @@ def main(args):
         save_checkpoint(checkpoint, filename=f'checkpoints/{args.model}/checkpoint_{epoch}.pth')
 
         # Uncomment the next line if you want to check accuracy
-        # check_accuracy(val_dataloader, model, device=DEVICE)
+        check_accuracy(val_dataloader, model, device=DEVICE)
 
         save_predictions_as_imgs(val_dataloader, model, epoch=epoch, folder=f'results/{args.model}/', device=DEVICE)
 
