@@ -5,6 +5,9 @@ from albumentations.pytorch import ToTensorV2
 from tqdm import tqdm
 import torch.nn as nn
 import torch.optim as optim
+import logging
+import os
+from datetime import datetime
 
 from src.models.UNet import UNet
 from src.models.UNetpp import UNetPlusPlus
@@ -13,13 +16,38 @@ from src.models.ResNetUNet import ResNetUNet
 from src.models.DeepLabV3p import DeepLabV3Plus
 
 from src.datasets.dataset import PanNukeDataset
-from src.utils.utils import save_checkpoint, load_checkpoint, check_accuracy, save_predictions_as_imgs
+from src.utils.utils import save_checkpoint, load_checkpoint, check_accuracy, save_predictions_as_imgs, save_metrics
 from torch.utils.data import DataLoader
 from src.utils.losses import (BinaryDiceLoss, BinaryCombinedLoss, FocalDiceLoss,
                              MultiClassDiceLoss, MultiClassFocalLoss, MultiClassCombinedLoss)
 
-def train_fn(loader, model, optimizer, loss_fn, scaler):
-    loop = tqdm(loader, desc='Training')
+def setup_logger(log_file=None, log_level=logging.INFO):
+    """
+    Setup logger to print to console and optionally save to file.
+    """
+    logger = logging.getLogger('train')
+    logger.setLevel(log_level)
+    
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(log_level)
+    console_formatter = logging.Formatter('%(asctime)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    console_handler.setFormatter(console_formatter)
+    logger.addHandler(console_handler)
+    
+    # File handler (optional)
+    if log_file:
+        os.makedirs(os.path.dirname(log_file) if os.path.dirname(log_file) else '.', exist_ok=True)
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(log_level)
+        file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+        file_handler.setFormatter(file_formatter)
+        logger.addHandler(file_handler)
+    
+    return logger
+
+def train_fn(loader, model, optimizer, loss_fn, scaler, logger, verbose=True):
+    loop = tqdm(loader, desc='Training', disable=not verbose)
     total_loss = 0
     for batch_idx, (data, mask) in enumerate(loop):
         data = data.to(args.device)
@@ -42,25 +70,33 @@ def train_fn(loader, model, optimizer, loss_fn, scaler):
     return avg_train_loss
 
 
-def val_fn(loader, model, loss_fn):
+def val_fn(loader, model, loss_fn, logger, verbose=True):
     """Validation function - calculates loss only"""
     model.eval()
     total_loss = 0
     
     with torch.no_grad():
-        for data, mask in tqdm(loader, desc='Validation'):
+        loop = tqdm(loader, desc='Validation', disable=not verbose)
+        for data, mask in loop:
             data = data.to(args.device)
             mask = mask.long().to(args.device)
             
             predictions = model(data)
             loss = loss_fn(predictions, mask)
             total_loss += loss.item()
+            loop.set_postfix(loss=loss.item())
     
     avg_val_loss = total_loss / len(loader)
     return avg_val_loss
 
 
 def main(args):
+    # Setup logger
+    log_file = f'logs/{args.model}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log' if args.save_log else None
+    logger = setup_logger(log_file=log_file)
+    logger.info(f"Starting training with {args.model}")
+    logger.info(f"Device: {args.device}, Batch Size: {args.batch_size_train}")
+    
     DEVICE = args.device
     train_transform = A.Compose(
         [
@@ -135,9 +171,9 @@ def main(args):
 
     scaler = torch.cuda.amp.GradScaler()
     for epoch in range(args.num_epochs):
-        print(f"\n{'='*60}")
-        print(f"Epoch {epoch+1}/{args.num_epochs}")
-        print(f"{'='*60}")
+        logger.info(f"\n{'='*70}")
+        logger.info(f"Epoch {epoch+1}/{args.num_epochs}")
+        logger.info(f"{'='*70}")
 
         if args.model == 'ResNetUNet_pt':
             if unfreeze_encoder(model, epoch, unfreeze_epoch=3):
@@ -145,23 +181,20 @@ def main(args):
                     param_group['lr'] *= 0.1
 
         model.train()
-        avg_train_loss = train_fn(dataloader, model, optimizer, loss_fn, scaler)
+        avg_train_loss = train_fn(dataloader, model, optimizer, loss_fn, scaler, logger, verbose=args.verbose)
         
-        avg_val_loss = val_fn(val_dataloader, model, loss_fn)
+        avg_val_loss = val_fn(val_dataloader, model, loss_fn, logger, verbose=args.verbose)
         
-        print(f"\n{'='*60}")
-        print(f"Epoch {epoch+1} Loss Summary:")
-        print(f"  Train Loss: {avg_train_loss:.4f}")
-        print(f"  Val Loss:   {avg_val_loss:.4f}")
-        print(f"{'='*60}")
+        logger.info(f"Loss Summary - Train: {avg_train_loss:.4f} | Val: {avg_val_loss:.4f}")
         
         # Check accuracy on training set
-        print("\n--- Training Accuracy ---")
-        check_accuracy(dataloader, model, device=DEVICE)
+        train_metrics = check_accuracy(dataloader, model, device=DEVICE, verbose=args.verbose)
         
         # Check accuracy on validation set
-        print("\n--- Validation Accuracy ---")
-        check_accuracy(val_dataloader, model, device=DEVICE)
+        val_metrics = check_accuracy(val_dataloader, model, device=DEVICE, verbose=args.verbose)
+        
+        # Save metrics to JSON file
+        save_metrics(epoch, avg_train_loss, avg_val_loss, train_metrics, val_metrics, args.model)
 
         checkpoint = {
             "state_dict": model.state_dict(),
@@ -189,6 +222,8 @@ if __name__ == '__main__':
     parser.add_argument('--train_fold', type=int, default=1, help='Train fold index')
     parser.add_argument('--val_fold', type=int, default=2, help='Validation fold index')
     parser.add_argument('--deep_supervision', type=bool, default=True, help='Enable deep supervision for UNet++')
+    parser.add_argument('--verbose', action='store_true', help='Show progress bar (disable for cleaner output on Kaggle)')
+    parser.add_argument('--save_log', type=bool, default=True, help='Save training log to file')
 
     args = parser.parse_args()
     main(args)
