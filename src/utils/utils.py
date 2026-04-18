@@ -20,6 +20,8 @@ def check_accuracy(loader, model, device="cuda"):
     - Per-class IoU (Intersection over Union)
     - Per-class Precision
     - Per-class Recall
+    - Per-class Accuracy
+    - Overall Pixel Accuracy
     """
     model.eval()
     
@@ -28,22 +30,36 @@ def check_accuracy(loader, model, device="cuda"):
     ious = torch.zeros(6).to(device)
     precisions = torch.zeros(6).to(device)
     recalls = torch.zeros(6).to(device)
+    accuracies = torch.zeros(6).to(device)
     
+    total_correct = 0
+    total_pixels = 0
     n_samples = 0
     
     with torch.no_grad():
         for x, y in loader:
             x = x.to(device)
-            y = y.to(device)
+            y = y.to(device)  # Shape: (B, H, W) with class indices 0-5
             
-            # Get predictions
-            preds = torch.sigmoid(model(x))
-            preds = (preds > 0.5).float()
+            # Get predictions: shape (B, 6, H, W)
+            output = model(x)
+            # Handle deep supervision
+            if isinstance(output, list):
+                output = output[-1]
+            
+            # Convert to class indices: argmax over 6 channels
+            preds = torch.argmax(output, dim=1)  # Shape: (B, H, W) with values 0-5
+            
+            # Overall pixel accuracy
+            correct = (preds == y).sum().item()
+            total_correct += correct
+            total_pixels += y.numel()
             
             # Calculate metrics for each class
             for class_idx in range(6):
-                pred_class = preds[:, class_idx]
-                target_class = y[:, class_idx]
+                # Binary masks: True where prediction/target equals class_idx
+                pred_class = (preds == class_idx).float()
+                target_class = (y == class_idx).float()
                 
                 # Intersection and Union
                 intersection = (pred_class * target_class).sum()
@@ -69,6 +85,10 @@ def check_accuracy(loader, model, device="cuda"):
                 # Recall: TP/(TP + FN)
                 recall = tp / (tp + fn + 1e-8)
                 recalls[class_idx] += recall
+                
+                # Accuracy (per-class): TP/(TP + FP + FN)
+                accuracy = tp / (tp + fp + fn + 1e-8)
+                accuracies[class_idx] += accuracy
             
             n_samples += 1
     
@@ -77,30 +97,36 @@ def check_accuracy(loader, model, device="cuda"):
     ious /= n_samples
     precisions /= n_samples
     recalls /= n_samples
+    accuracies /= n_samples
+    
+    # Calculate overall pixel accuracy
+    overall_pixel_acc = total_correct / total_pixels if total_pixels > 0 else 0
     
     # Print results
     print("\nMetrics per class:")
-    print("Class\t\tDice\t\tIoU\t\tPrecision\tRecall")
-    print("-" * 65)
+    print("Class\t\tDice\t\tIoU\t\tAccuracy\tPrecision\tRecall")
+    print("-" * 85)
     
-    class_names = ['Class_1', 'Class_2', 'Class_3', 'Class_4', 'Class_5', 'Class_6']
+    class_names = ['Background', 'Neoplastic', 'Inflammatory', 'Connective', 'Dead', 'Epithelial']
     
     for i in range(6):
-        print(f"{class_names[i]:<12} {dice_scores[i]:.4f}\t{ious[i]:.4f}\t{precisions[i]:.4f}\t{recalls[i]:.4f}")
+        print(f"{class_names[i]:<12} {dice_scores[i]:.4f}\t{ious[i]:.4f}\t{accuracies[i]:.4f}\t\t{precisions[i]:.4f}\t{recalls[i]:.4f}")
     
     # Print mean metrics
-    print("-" * 65)
-    print(f"Mean\t\t{dice_scores.mean():.4f}\t{ious.mean():.4f}\t{precisions.mean():.4f}\t{recalls.mean():.4f}")
-    
-    model.train()
+    print("-" * 85)
+    print(f"Mean\t\t{dice_scores.mean():.4f}\t{ious.mean():.4f}\t{accuracies.mean():.4f}\t\t{precisions.mean():.4f}\t{recalls.mean():.4f}")
+    print(f"Overall Pixel Accuracy: {overall_pixel_acc:.4f}")
     
     return {
         'dice_scores': dice_scores.cpu().numpy(),
         'ious': ious.cpu().numpy(),
         'precisions': precisions.cpu().numpy(),
         'recalls': recalls.cpu().numpy(),
+        'accuracies': accuracies.cpu().numpy(),
+        'overall_pixel_acc': overall_pixel_acc,
         'mean_dice': dice_scores.mean().item(),
         'mean_iou': ious.mean().item(),
+        'mean_accuracy': accuracies.mean().item(),
         'mean_precision': precisions.mean().item(),
         'mean_recall': recalls.mean().item()
     }
@@ -117,22 +143,29 @@ def save_predictions_as_imgs(loader, model, epoch, mod=50, folder='results/', de
                 # Handle both deep supervision and single output cases
                 if isinstance(output, list):
                     # Take the final output (most refined prediction)
-                    preds = torch.sigmoid(output[-1])
-                else:
-                    preds = torch.sigmoid(output)
-                preds = (preds > 0.5).float()
+                    output = output[-1]
+                
+                # Convert multi-class output to class indices
+                # output shape: (B, 6, H, W) -> preds shape: (B, H, W)
+                preds = torch.argmax(output, dim=1)  # Get class with max probability
+                # Normalize class indices 0-5 to 0-255 for visualization
+                preds = (preds.float() / 5.0 * 255).unsqueeze(1).byte()  # (B, 1, H, W)
             
             def make_folder(path):
                 # Check if the folder exists, and if not, create it
                 if not os.path.exists(path):
                     os.makedirs(path)
             
+            # Convert ground truth mask to saveable format
+            # y shape: (B, H, W) with class indices 0-5
+            y_normalized = (y.float() / 5.0 * 255).unsqueeze(1).byte()  # (B, 1, H, W)
+            
             # Save images
             if epoch == 0:
                 make_folder(f"{folder}pred/epoch_{epoch}/")
                 torchvision.utils.save_image(preds, f"{folder}pred/epoch_{epoch}/pred_{idx}.jpg")
                 make_folder(f"{folder}true/epoch_{epoch}/")
-                torchvision.utils.save_image(y, f"{folder}true/epoch_{epoch}/true_{idx}.jpg")
+                torchvision.utils.save_image(y_normalized, f"{folder}true/epoch_{epoch}/true_{idx}.jpg")
             make_folder(f"{folder}image/epoch_{epoch}/")
             torchvision.utils.save_image(x, f"{folder}image/epoch_{epoch}/image{idx}.jpg")
             

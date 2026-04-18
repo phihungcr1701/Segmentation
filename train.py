@@ -15,14 +15,15 @@ from src.models.DeepLabV3p import DeepLabV3Plus
 from src.datasets.dataset import PanNukeDataset
 from src.utils.utils import save_checkpoint, load_checkpoint, check_accuracy, save_predictions_as_imgs
 from torch.utils.data import DataLoader
-from src.utils.losses import BinaryDiceLoss, BinaryCombinedLoss, FocalDiceLoss
-
+from src.utils.losses import (BinaryDiceLoss, BinaryCombinedLoss, FocalDiceLoss,
+                             MultiClassDiceLoss, MultiClassFocalLoss, MultiClassCombinedLoss)
 
 def train_fn(loader, model, optimizer, loss_fn, scaler):
-    loop = tqdm(loader)
+    loop = tqdm(loader, desc='Training')
+    total_loss = 0
     for batch_idx, (data, mask) in enumerate(loop):
         data = data.to(args.device)
-        mask = mask.float().to(args.device)
+        mask = mask.long().to(args.device)
 
         with torch.cuda.amp.autocast():
             predictions = model(data)  # May return list of predictions with deep supervision
@@ -34,7 +35,29 @@ def train_fn(loader, model, optimizer, loss_fn, scaler):
         scaler.step(optimizer)
         scaler.update()
 
+        total_loss += loss.item()
         loop.set_postfix(loss=loss.item())
+    
+    avg_train_loss = total_loss / len(loader)
+    return avg_train_loss
+
+
+def val_fn(loader, model, loss_fn):
+    """Validation function - calculates loss only"""
+    model.eval()
+    total_loss = 0
+    
+    with torch.no_grad():
+        for data, mask in tqdm(loader, desc='Validation'):
+            data = data.to(args.device)
+            mask = mask.long().to(args.device)
+            
+            predictions = model(data)
+            loss = loss_fn(predictions, mask)
+            total_loss += loss.item()
+    
+    avg_val_loss = total_loss / len(loader)
+    return avg_val_loss
 
 
 def main(args):
@@ -90,12 +113,18 @@ def main(args):
         )
 
     dataset = PanNukeDataset(root_dir=args.root_dir, fold=args.train_fold, transform=train_transform)
-    dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=args.batch_size_train, shuffle=True)
 
     val_dataset = PanNukeDataset(root_dir=args.root_dir, fold=args.val_fold)
-    val_dataloader = DataLoader(val_dataset, batch_size=1, shuffle=False)
+    val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size_val, shuffle=False)
 
-    if args.loss == 'FocalDiceLoss':
+    if args.loss == 'MultiClassFocalLoss':
+        loss_fn = MultiClassFocalLoss(gamma=2, n_classes=6)
+    elif args.loss == 'MultiClassCombinedLoss':
+        loss_fn = MultiClassCombinedLoss(alpha=0.5, n_classes=6)
+    elif args.loss == 'MultiClassDiceLoss':
+        loss_fn = MultiClassDiceLoss(n_classes=6)
+    elif args.loss == 'FocalDiceLoss':
         loss_fn = FocalDiceLoss()
     elif args.loss == 'BinaryCombinedLoss':
         loss_fn = BinaryCombinedLoss()
@@ -115,7 +144,24 @@ def main(args):
                 for param_group in optimizer.param_groups:
                     param_group['lr'] *= 0.1
 
-        train_fn(dataloader, model, optimizer, loss_fn, scaler)
+        model.train()
+        avg_train_loss = train_fn(dataloader, model, optimizer, loss_fn, scaler)
+        
+        avg_val_loss = val_fn(val_dataloader, model, loss_fn)
+        
+        print(f"\n{'='*60}")
+        print(f"Epoch {epoch+1} Loss Summary:")
+        print(f"  Train Loss: {avg_train_loss:.4f}")
+        print(f"  Val Loss:   {avg_val_loss:.4f}")
+        print(f"{'='*60}")
+        
+        # Check accuracy on training set
+        print("\n--- Training Accuracy ---")
+        check_accuracy(dataloader, model, device=DEVICE)
+        
+        # Check accuracy on validation set
+        print("\n--- Validation Accuracy ---")
+        check_accuracy(val_dataloader, model, device=DEVICE)
 
         checkpoint = {
             "state_dict": model.state_dict(),
@@ -123,22 +169,20 @@ def main(args):
         }
         save_checkpoint(checkpoint, filename=f'checkpoints/{args.model}/checkpoint_{epoch}.pth')
 
-        # Uncomment the next line if you want to check accuracy
-        check_accuracy(val_dataloader, model, device=DEVICE)
-
-        save_predictions_as_imgs(val_dataloader, model, epoch=epoch, folder=f'results/{args.model}/', device=DEVICE)
+        # save_predictions_as_imgs(val_dataloader, model, epoch=epoch, folder=f'results/{args.model}/', device=DEVICE)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--device', type=str, default='cuda', help='Device to use (cuda or cpu)')
     parser.add_argument('--model', type=str, default='DeepLabV3+', help='Model to use (e.g., UNet, UNet++, ResNetUNet, DeepLabV3+)')
-    parser.add_argument('--loss', type=str, default='FocalDiceLoss', help='Loss function to use')
-    parser.add_argument('--batch_size', type=int, default=8, help='Batch size')
+    parser.add_argument('--loss', type=str, default='MultiClassCombinedLoss', help='Loss function to use')
+    parser.add_argument('--batch_size_train', type=int, default=8, help='Batch size')
+    parser.add_argument('--batch_size_val', type=int, default=8, help='Batch size')
     parser.add_argument('--num_epochs', type=int, default=10, help='Number of epochs')
     parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate')
     parser.add_argument('--in_channels', type=int, default=3, help='Number of input channels')
-    parser.add_argument('--out_channels', type=int, default=1, help='Number of output channels')
+    parser.add_argument('--out_channels', type=int, default=6, help='Number of output channels')
     parser.add_argument('--features', type=list, default=[64, 128, 256, 512], help='Features for the model')
     parser.add_argument('--load_model', type=bool, default=False, help='Load a pre-trained model')
     parser.add_argument('--root_dir', type=str, default='data/raw/folds', help='Root directory of the dataset')

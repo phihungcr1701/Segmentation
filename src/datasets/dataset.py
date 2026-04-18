@@ -29,28 +29,27 @@ class PanNukeDataset(Dataset):
         image = self.images[idx].copy()
         mask = self.masks[idx].copy()
         
-        # Binary mask for segmentation
-        collapsed_array = np.max(mask, axis=2)
-        binary_array = np.where(collapsed_array > 1, 1, 0)
-        mask = binary_array
+        # Multi-class segmentation: convert one-hot (256, 256, 6) to class indices (256, 256)
+        # Channel mapping: 0=Background, 1=Neoplastic, 2=Inflammatory, 3=Connective, 4=Dead, 5=Epithelial
+        mask = np.argmax(mask, axis=2)  # Shape: (256, 256), values: 0-5
         
         # Normalize image to [0, 1] range and ensure float32
         image = (image / 255).astype(np.float32)
-        mask = mask.astype(np.float32)
+        # Mask should be int64 for CrossEntropyLoss
+        mask = mask.astype(np.int64)
         
         if self.transform:
             # Apply transforms with named arguments
             transformed = self.transform(image=image, mask=mask)
             image = transformed["image"]
-            mask = transformed["mask"].unsqueeze(0)
+            mask = transformed["mask"].long()
             
         else:
             # Convert to torch tensors if no transform
             image = torch.from_numpy(image).permute(2, 0, 1)
-            mask = torch.from_numpy(mask).unsqueeze(0)
-        # Ensure float32 type for tensors
+            mask = torch.from_numpy(mask).long()
+        # Ensure float32 type for image
         image = image.float()
-        mask = mask.float()
             
         return image, mask
     
