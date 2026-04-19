@@ -81,7 +81,7 @@ def load_checkpoint(filepath, model):
     checkpoint = torch.load(filepath)
     model.load_state_dict(checkpoint['state_dict'])
     
-def check_accuracy(loader, model, device="cuda", verbose=True):
+def check_accuracy(loader, model, device="cuda", verbose=True, logger=None):
     """
     Calculate accuracy metrics for multi-class segmentation:
     - Per-class Dice score
@@ -90,6 +90,13 @@ def check_accuracy(loader, model, device="cuda", verbose=True):
     - Per-class Recall
     - Per-class Accuracy
     - Overall Pixel Accuracy
+    
+    Args:
+        loader: DataLoader for evaluation
+        model: Model to evaluate
+        device: Device to use (cuda or cpu)
+        verbose: Whether to print metrics
+        logger: Logger object for logging metrics (optional)
     """
     model.eval()
     
@@ -172,19 +179,21 @@ def check_accuracy(loader, model, device="cuda", verbose=True):
     
     # Print results only if verbose
     if verbose:
-        print("\nMetrics per class:")
-        print("Class\t\tDice\t\tIoU\t\tAccuracy\tPrecision\tRecall")
-        print("-" * 85)
+        output_fn = logger.info if logger else print
+        
+        output_fn("\nMetrics per class:")
+        output_fn("Class\t\tDice\t\tIoU\t\tAccuracy\tPrecision\tRecall")
+        output_fn("-" * 85)
         
         class_names = ['Background', 'Neoplastic', 'Inflammatory', 'Connective', 'Dead', 'Epithelial']
         
         for i in range(6):
-            print(f"{class_names[i]:<12} {dice_scores[i]:.4f}\t{ious[i]:.4f}\t{accuracies[i]:.4f}\t\t{precisions[i]:.4f}\t{recalls[i]:.4f}")
+            output_fn(f"{class_names[i]:<12} {dice_scores[i]:.4f}\t{ious[i]:.4f}\t{accuracies[i]:.4f}\t\t{precisions[i]:.4f}\t{recalls[i]:.4f}")
         
         # Print mean metrics
-        print("-" * 85)
-        print(f"Mean\t\t{dice_scores.mean():.4f}\t{ious.mean():.4f}\t{accuracies.mean():.4f}\t\t{precisions.mean():.4f}\t{recalls.mean():.4f}")
-        print(f"Overall Pixel Accuracy: {overall_pixel_acc:.4f}")
+        output_fn("-" * 85)
+        output_fn(f"Mean\t\t{dice_scores.mean():.4f}\t{ious.mean():.4f}\t{accuracies.mean():.4f}\t\t{precisions.mean():.4f}\t{recalls.mean():.4f}")
+        output_fn(f"Overall Pixel Accuracy: {overall_pixel_acc:.4f}")
     
     return {
         'dice_scores': dice_scores.cpu().numpy(),

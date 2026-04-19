@@ -170,6 +170,7 @@ def main(args):
         raise ValueError('Invalid loss function')
 
     scaler = torch.cuda.amp.GradScaler()
+    best_val_loss = float('inf')
     for epoch in range(args.num_epochs):
         logger.info(f"\n{'='*70}")
         logger.info(f"Epoch {epoch+1}/{args.num_epochs}")
@@ -188,19 +189,25 @@ def main(args):
         logger.info(f"Loss Summary - Train: {avg_train_loss:.4f} | Val: {avg_val_loss:.4f}")
         
         # Check accuracy on training set
-        train_metrics = check_accuracy(dataloader, model, device=DEVICE, verbose=args.verbose)
+        logger.info("\n--- Training Metrics ---")
+        train_metrics = check_accuracy(dataloader, model, device=DEVICE, verbose=args.verbose, logger=logger)
         
         # Check accuracy on validation set
-        val_metrics = check_accuracy(val_dataloader, model, device=DEVICE, verbose=args.verbose)
+        logger.info("\n--- Validation Metrics ---")
+        val_metrics = check_accuracy(val_dataloader, model, device=DEVICE, verbose=args.verbose, logger=logger)
         
         # Save metrics to JSON file
         save_metrics(epoch, avg_train_loss, avg_val_loss, train_metrics, val_metrics, args.model)
 
-        checkpoint = {
-            "state_dict": model.state_dict(),
-            "optimizer": optimizer.state_dict()
-        }
-        save_checkpoint(checkpoint, filename=f'checkpoints/{args.model}/checkpoint_{epoch}.pth')
+        # Save best model (overwrite)
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            checkpoint = {
+                "state_dict": model.state_dict(),
+                "optimizer": optimizer.state_dict()
+            }
+            save_checkpoint(checkpoint, filename=f'checkpoints/{args.model}/checkpoint_best.pth')
+            logger.info(f"✓ Best model saved! Val Loss: {avg_val_loss:.4f}")
 
         # save_predictions_as_imgs(val_dataloader, model, epoch=epoch, folder=f'results/{args.model}/', device=DEVICE)
 
